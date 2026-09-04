@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grant Tracker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Grant Tracker</h1>
+    <nav>
+      <button id="nav-board" class="nav-btn">Board</button>
+      <button id="nav-timeline" class="nav-btn">Timeline</button>
+    </nav>
+    <button id="new-project-btn" class="primary-btn">+ New project</button>
+  </header>
+
+  <main>
+    <section id="board-view">
+      <div id="columns"></div>
+    </section>
+
+    <section id="timeline-view" hidden>
+      <div class="timeline-nav">
+        <button id="week-prev" class="soft-btn">&larr; Previous week</button>
+        <span id="week-label"></span>
+        <button id="week-next" class="soft-btn">Next week &rarr;</button>
+      </div>
+      <div id="timeline-grid"></div>
+    </section>
+  </main>
+
+  <dialog id="modal">
+    <div id="modal-content"></div>
+  </dialog>
+
+  <div id="toast" hidden></div>
+
+  <script src="/static/board.js" defer></script>
+  <script src="/static/timeline.js" defer></script>
+</body>
+</html>
