@@ -138,7 +138,10 @@ function renderColumn(p) {
       <div class="column-accent" style="background:${esc(p.color)}"></div>
       <div class="column-header">
         <h2>${esc(p.name)}</h2>
-        <button class="ghost-btn archive-btn">Archive</button>
+        <span class="col-actions">
+          <button class="ghost-btn edit-project-btn" title="Edit project">✎</button>
+          <button class="ghost-btn archive-btn">Archive</button>
+        </span>
       </div>
       <div class="column-body">
         <div class="task-list"></div>
@@ -148,6 +151,7 @@ function renderColumn(p) {
       </div>
     </div>`);
 
+  col.querySelector(".edit-project-btn").onclick = () => openProjectForm(p);
   col.querySelector(".archive-btn").onclick = () => confirmArchive(p);
   col.querySelector(".add-task-btn").onclick = () => openTaskForm(p);
 
@@ -309,21 +313,33 @@ function openClockOutModal() {
 
 // ---------- forms ----------
 
-function openProjectForm() {
+function openProjectForm(project) {
+  const editing = !!project;
   const c = openModal(`
-    <h3>New project</h3>
+    <h3>${editing ? "Edit project" : "New project"}</h3>
     <label for="pf-name">Project name</label>
-    <input id="pf-name" placeholder="e.g. Riverside Arts Grant">
+    <input id="pf-name" placeholder="e.g. Riverside Arts Grant"
+      value="${editing ? esc(project.name) : ""}">
+    <label for="pf-rate">Hourly rate in $ (optional)</label>
+    <input id="pf-rate" type="number" min="0" step="0.01" placeholder="e.g. 85"
+      value="${editing && project.rate != null ? esc(project.rate) : ""}">
     <div class="dialog-actions">
       <button class="soft-btn" data-act="cancel">Cancel</button>
-      <button class="primary-btn" data-act="ok">Create</button>
+      <button class="primary-btn" data-act="ok">${editing ? "Save" : "Create"}</button>
     </div>`);
   c.querySelector('[data-act="cancel"]').onclick = closeModal;
   const submit = async () => {
     const name = c.querySelector("#pf-name").value.trim();
-    if (!name) return;
+    if (!name) { toast("Project name is required"); return; }
+    const rateStr = c.querySelector("#pf-rate").value.trim();
+    const rate = rateStr === "" ? null : Number(rateStr);
+    if (rate !== null && (Number.isNaN(rate) || rate < 0)) {
+      toast("Rate must be a non-negative number");
+      return;
+    }
     closeModal();
-    await api("POST", "/api/projects", { name });
+    if (editing) await api("PATCH", `/api/projects/${project.id}`, { name, rate });
+    else await api("POST", "/api/projects", { name, rate });
     refresh();
   };
   c.querySelector('[data-act="ok"]').onclick = submit;
@@ -341,36 +357,73 @@ function confirmArchive(p) {
     async () => { await api("POST", `/api/projects/${p.id}/archive`); refresh(); });
 }
 
-function openTaskForm(p, task) {
+function openTaskForm(p, task, onSave = refresh) {
   const editing = !!task;
+  const type = editing ? task.task_type : "grant";
   const c = openModal(`
     <h3>${editing ? "Edit task" : `New task — ${esc(p.name)}`}</h3>
     <label for="tf-title">Title</label>
     <input id="tf-title" value="${editing ? esc(task.title) : ""}">
     <label for="tf-deadline">Deadline</label>
     <input id="tf-deadline" type="date" value="${editing ? esc(task.deadline) : ""}">
+    <label for="tf-type">Type</label>
+    <select id="tf-type">
+      <option value="grant" ${type === "grant" ? "selected" : ""}>Grant</option>
+      <option value="other" ${type === "other" ? "selected" : ""}>Other</option>
+    </select>
+    <div id="tf-grant-fields" ${type === "other" ? "hidden" : ""}>
+      <label for="tf-foa">FOA description</label>
+      <textarea id="tf-foa" placeholder="Funding opportunity, program, agency…"
+        >${editing ? esc(task.foa_description || "") : ""}</textarea>
+      <label for="tf-applied">Amount applied for in $ (optional)</label>
+      <input id="tf-applied" type="number" min="0" step="0.01"
+        value="${editing && task.amount_applied != null ? esc(task.amount_applied) : ""}">
+      <label for="tf-awarded">Amount awarded in $ (optional)</label>
+      <input id="tf-awarded" type="number" min="0" step="0.01"
+        value="${editing && task.amount_awarded != null ? esc(task.amount_awarded) : ""}">
+    </div>
     <div class="dialog-actions">
       ${editing ? '<button class="ghost-btn" data-act="delete">Delete task</button>' : ""}
       <span class="spacer"></span>
       <button class="soft-btn" data-act="cancel">Cancel</button>
       <button class="primary-btn" data-act="ok">${editing ? "Save" : "Add task"}</button>
     </div>`);
+  c.querySelector("#tf-type").onchange = (e) => {
+    c.querySelector("#tf-grant-fields").hidden = e.target.value === "other";
+  };
   c.querySelector('[data-act="cancel"]').onclick = closeModal;
   c.querySelector('[data-act="ok"]').onclick = async () => {
     const title = c.querySelector("#tf-title").value.trim();
     const deadline = c.querySelector("#tf-deadline").value;
     if (!title || !deadline) { toast("Title and deadline are required"); return; }
+    const task_type = c.querySelector("#tf-type").value;
+    const money = (sel) => {
+      const v = c.querySelector(sel).value.trim();
+      return v === "" ? null : Number(v);
+    };
+    const body = { title, deadline, task_type };
+    if (task_type === "grant") {
+      body.foa_description = c.querySelector("#tf-foa").value.trim() || null;
+      body.amount_applied = money("#tf-applied");
+      body.amount_awarded = money("#tf-awarded");
+      for (const amt of [body.amount_applied, body.amount_awarded]) {
+        if (amt !== null && (Number.isNaN(amt) || amt < 0)) {
+          toast("Amounts must be non-negative numbers");
+          return;
+        }
+      }
+    }
     closeModal();
-    if (editing) await api("PATCH", `/api/tasks/${task.id}`, { title, deadline });
-    else await api("POST", "/api/tasks", { project_id: p.id, title, deadline });
-    refresh();
+    if (editing) await api("PATCH", `/api/tasks/${task.id}`, body);
+    else await api("POST", "/api/tasks", { ...body, project_id: p.id });
+    onSave();
   };
   if (editing) {
     c.querySelector('[data-act="delete"]').onclick = () => confirmDialog(
       "Delete task",
       `Delete “${task.title}” and all its todos? This cannot be undone.`,
       "Delete",
-      async () => { await api("DELETE", `/api/tasks/${task.id}`); refresh(); });
+      async () => { await api("DELETE", `/api/tasks/${task.id}`); onSave(); });
   }
   c.querySelector("#tf-title").focus();
 }
@@ -423,21 +476,26 @@ function openTodoForm(task, todo) {
 // ---------- view switching ----------
 
 function switchView(name) {
-  document.getElementById("board-view").hidden = name !== "board";
-  document.getElementById("timeline-view").hidden = name !== "timeline";
-  document.getElementById("nav-board").classList.toggle("active", name === "board");
-  document.getElementById("nav-timeline").classList.toggle("active", name === "timeline");
+  for (const view of ["board", "timeline", "list"]) {
+    document.getElementById(`${view}-view`).hidden = name !== view;
+    document.getElementById(`nav-${view}`).classList.toggle("active", name === view);
+  }
   if (name === "timeline") loadTimelineWeek(); // defined in timeline.js
+  if (name === "list") loadListView();         // defined in list.js
 }
 
 function applyHash() {
-  switchView(location.hash === "#timeline" ? "timeline" : "board");
+  const name = location.hash.slice(1);
+  switchView(name === "timeline" || name === "list" ? name : "board");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("new-project-btn").onclick = openProjectForm;
-  document.getElementById("nav-board").onclick = () => { location.hash = "#board"; };
-  document.getElementById("nav-timeline").onclick = () => { location.hash = "#timeline"; };
+  document.getElementById("new-project-btn").onclick = () => openProjectForm();
+  for (const view of ["board", "timeline", "list"]) {
+    document.getElementById(`nav-${view}`).onclick = () => {
+      location.hash = `#${view}`;
+    };
+  }
   window.addEventListener("hashchange", applyHash);
   refresh().then(applyHash);
 });

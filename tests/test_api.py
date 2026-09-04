@@ -163,6 +163,114 @@ def test_archive_blocked_while_clocked_in(client):
     assert client.post(f"/api/projects/{p['id']}/archive").status_code == 200
 
 
+def test_project_rate_roundtrip(client):
+    client.post("/api/projects", json={"name": "Rated", "rate": 85})
+    p = client.get("/api/state").json["projects"][0]
+    assert p["rate"] == 85
+
+    assert client.patch(
+        f"/api/projects/{p['id']}", json={"rate": 92.5}
+    ).status_code == 200
+    assert client.get("/api/state").json["projects"][0]["rate"] == 92.5
+
+    assert client.patch(
+        f"/api/projects/{p['id']}", json={"rate": None}
+    ).status_code == 200
+    assert client.get("/api/state").json["projects"][0]["rate"] is None
+
+    assert client.patch(
+        f"/api/projects/{p['id']}", json={"rate": -5}
+    ).status_code == 400
+    assert client.post(
+        "/api/projects", json={"name": "Bad", "rate": "lots"}
+    ).status_code == 400
+
+
+def test_timeline_sessions_carry_project_rate(client):
+    client.post("/api/projects", json={"name": "Rated", "rate": 85})
+    p = client.get("/api/state").json["projects"][0]
+    client.post("/api/clock_in", json={"project_id": p["id"]})
+    client.post("/api/clock_out", json={})
+    monday = date.today() - timedelta(days=date.today().weekday())
+    sessions = client.get(f"/api/timeline?start={monday.isoformat()}").json["sessions"]
+    assert sessions[0]["rate"] == 85
+
+
+def test_grant_fields_roundtrip(client):
+    p = make_project(client)
+    resp = client.post("/api/tasks", json={
+        "project_id": p["id"], "title": "USDA app", "deadline": "2026-12-01",
+        "task_type": "grant", "foa_description": "USDA Community Food Projects",
+        "amount_applied": 198000,
+    })
+    assert resp.status_code == 200
+    t = client.get("/api/state").json["projects"][0]["tasks"][0]
+    assert t["task_type"] == "grant"
+    assert t["foa_description"] == "USDA Community Food Projects"
+    assert t["amount_applied"] == 198000
+    assert t["amount_awarded"] is None
+
+    client.patch(f"/api/tasks/{t['id']}", json={"amount_awarded": 150000.5})
+    t = client.get("/api/state").json["projects"][0]["tasks"][0]
+    assert t["amount_awarded"] == 150000.5
+
+    # switching to 'other' clears grant fields
+    client.patch(f"/api/tasks/{t['id']}", json={"task_type": "other"})
+    t = client.get("/api/state").json["projects"][0]["tasks"][0]
+    assert t["task_type"] == "other"
+    assert t["foa_description"] is None
+    assert t["amount_applied"] is None
+
+    assert client.patch(
+        f"/api/tasks/{t['id']}", json={"task_type": "banana"}
+    ).status_code == 400
+    assert client.post("/api/tasks", json={
+        "project_id": p["id"], "title": "Bad", "deadline": "2026-12-01",
+        "amount_applied": -1,
+    }).status_code == 400
+
+
+def test_all_projects_includes_archived_and_tasks_include_completed(client):
+    pa = make_project(client, "Active")
+    pb = make_project(client, "Old")
+    client.post(f"/api/projects/{pb['id']}/archive")
+
+    projects = client.get("/api/projects/all").json["projects"]
+    assert {(p["name"], p["archived"]) for p in projects} == {
+        ("Active", 0), ("Old", 1)}
+
+    t = make_task(client, pa["id"], "Submitted grant")
+    client.post(f"/api/tasks/{t['id']}/complete")
+    tasks = client.get(f"/api/projects/{pa['id']}/tasks").json["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["completed"] == 1
+    assert tasks[0]["completed_at"] is not None
+
+
+def test_report_filters_by_since_date(client):
+    p = make_project(client)
+    t = make_task(client, p["id"], "Meadowlark education grant")
+    client.patch(f"/api/tasks/{t['id']}", json={
+        "foa_description": "Youth farm education", "amount_applied": 25000})
+    client.post(f"/api/tasks/{t['id']}/complete")
+
+    today = date.today().isoformat()
+    resp = client.get(f"/report?project_id={p['id']}&since={today}")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert "Meadowlark education grant" in html
+    assert "Youth farm education" in html
+    assert "$25,000" in html
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    html = client.get(
+        f"/report?project_id={p['id']}&since={tomorrow}").get_data(as_text=True)
+    assert "Meadowlark education grant" not in html
+    assert "No grants submitted" in html
+
+    assert client.get(f"/report?project_id={p['id']}&since=nope").status_code == 400
+
+
 def test_timeline_week_filtering_includes_overlap(app, client):
     p = make_project(client)
     with sqlite3.connect(app.config["DB_PATH"]) as db:

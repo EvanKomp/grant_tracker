@@ -36,7 +36,20 @@ that one file.
   session history.
 - **Timeline** (top nav) shows past weeks with a bar for each work session,
   placed at the time of day it happened. Click a bar to see the note and
-  the todos checked during it.
+  the todos checked during it. Below the grid, **Week totals** lists hours
+  per project for that week.
+- Projects can optionally have an **hourly rate** (set it when creating a
+  project, or later via the ✎ button in the column header). When set, the
+  week totals also show earnings in light grey next to the hours.
+- Tasks are usually grant applications, so each task has a type: **grant**
+  (the default) or **other**. Grant tasks can carry an FOA description, an
+  amount applied for, and an amount awarded — editable from the task's ✎
+  dialog on the board or from the List tab.
+- **List** (top nav) shows every task for a chosen project — including
+  archived projects and completed tasks — with FOA description, submission
+  date (when the task was completed), and the applied/awarded amounts.
+  **Export PDF** opens a print-ready report of all grants submitted since a
+  date you pick; use the browser print dialog's "Save as PDF".
 
 ## Tests
 

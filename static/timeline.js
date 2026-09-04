@@ -75,7 +75,50 @@ function renderTimeline(sessions) {
 
   if (!anyBars) {
     grid.appendChild(el(`<div class="tl-empty">No work recorded this week.</div>`));
+  } else {
+    grid.appendChild(renderWeekTotals(sessions, now));
   }
+}
+
+function renderWeekTotals(sessions, now) {
+  const weekStartMs = timelineWeekStart.getTime();
+  const weekEndMs = weekStartMs + 7 * DAY_MS;
+  const byProject = new Map();
+  for (const s of sessions) {
+    const sStart = new Date(s.started_at).getTime();
+    const sEnd = (s.ended_at ? new Date(s.ended_at) : now).getTime();
+    const ms = Math.min(sEnd, weekEndMs) - Math.max(sStart, weekStartMs);
+    if (ms <= 0) continue;
+    const row = byProject.get(s.project_id)
+      || { name: s.project_name, color: s.color, rate: s.rate, ms: 0 };
+    row.ms += ms;
+    byProject.set(s.project_id, row);
+  }
+
+  const box = el(`<div class="tl-summary"><h3>Week totals</h3></div>`);
+  const sumRow = (dotStyle, name, ms, earned, cls = "") =>
+    el(`
+      <div class="tl-sum-row ${cls}">
+        <span class="session-dot" style="${dotStyle}"></span>
+        <span class="tl-sum-name">${esc(name)}</span>
+        <span class="tl-sum-hours">${fmtDuration(ms)}</span>
+        <span class="tl-earned">${earned != null
+          ? `$${Math.round(earned).toLocaleString()}` : ""}</span>
+      </div>`);
+
+  const rows = [...byProject.values()].sort((a, b) => b.ms - a.ms);
+  let totalMs = 0, totalEarned = 0;
+  for (const r of rows) {
+    const earned = r.rate != null ? (r.ms / 3600000) * r.rate : null;
+    totalMs += r.ms;
+    totalEarned += earned || 0;
+    box.appendChild(sumRow(`background:${esc(r.color)}`, r.name, r.ms, earned));
+  }
+  if (rows.length > 1) {
+    box.appendChild(sumRow("visibility:hidden", "Total", totalMs,
+      totalEarned > 0 ? totalEarned : null, "total"));
+  }
+  return box;
 }
 
 function openSessionPopup(s) {

@@ -12,6 +12,7 @@
     <nav>
       <button id="nav-board" class="nav-btn">Board</button>
       <button id="nav-timeline" class="nav-btn">Timeline</button>
+      <button id="nav-list" class="nav-btn">List</button>
     </nav>
     <button id="new-project-btn" class="primary-btn">+ New project</button>
   </header>
@@ -29,6 +30,20 @@
       </div>
       <div id="timeline-grid"></div>
     </section>
+
+    <section id="list-view" hidden>
+      <div class="list-controls">
+        <label class="list-project-label">Project
+          <select id="list-project"></select>
+        </label>
+        <span class="list-export">
+          <label for="export-since">Export grants submitted since</label>
+          <input type="date" id="export-since">
+          <button id="export-pdf" class="soft-btn">Export PDF</button>
+        </span>
+      </div>
+      <div id="list-table"></div>
+    </section>
   </main>
 
   <dialog id="modal">
@@ -39,5 +54,6 @@
 
   <script src="/static/board.js" defer></script>
   <script src="/static/timeline.js" defer></script>
+  <script src="/static/list.js" defer></script>
 </body>
 </html>

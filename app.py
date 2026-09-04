@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL,
     color      TEXT    NOT NULL,
+    rate       REAL,
     archived   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT    NOT NULL
 );
@@ -32,6 +33,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     project_id   INTEGER NOT NULL REFERENCES projects(id),
     title        TEXT    NOT NULL,
     deadline     TEXT    NOT NULL,
+    task_type    TEXT    NOT NULL DEFAULT 'grant',
+    foa_description TEXT,
+    amount_applied  REAL,
+    amount_awarded  REAL,
     completed    INTEGER NOT NULL DEFAULT 0,
     completed_at TEXT,
     created_at   TEXT    NOT NULL
@@ -73,6 +78,23 @@ def create_app(db_path):
 
     with sqlite3.connect(app.config["DB_PATH"]) as init_db:
         init_db.executescript(SCHEMA)
+        # migrate databases created before these columns existed
+        migrations = {
+            "projects": {"rate": "REAL"},
+            "tasks": {
+                "task_type": "TEXT NOT NULL DEFAULT 'grant'",
+                "foa_description": "TEXT",
+                "amount_applied": "REAL",
+                "amount_awarded": "REAL",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {
+                row[1] for row in init_db.execute(f"PRAGMA table_info({table})")
+            }
+            for col, ddl in columns.items():
+                if col not in existing:
+                    init_db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
     def get_db():
         if "db" not in g:
@@ -148,11 +170,22 @@ def create_app(db_path):
 
     # ---------- projects ----------
 
+    def valid_money(value):
+        return value is None or (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value >= 0
+        )
+
     @app.post("/api/projects")
     def create_project():
-        name = (request.json or {}).get("name", "").strip()
+        data = request.json or {}
+        name = data.get("name", "").strip()
         if not name:
             return error("Project name is required")
+        rate = data.get("rate")
+        if not valid_money(rate):
+            return error("Rate must be a non-negative number")
         db = get_db()
         used = {
             r["color"]
@@ -168,9 +201,30 @@ def create_app(db_path):
             ],
         )
         db.execute(
-            "INSERT INTO projects (name, color, created_at) VALUES (?, ?, ?)",
-            (name, color, now_iso()),
+            "INSERT INTO projects (name, color, rate, created_at) VALUES (?, ?, ?, ?)",
+            (name, color, rate, now_iso()),
         )
+        db.commit()
+        return ok()
+
+    @app.patch("/api/projects/<int:project_id>")
+    def edit_project(project_id):
+        data = request.json or {}
+        db = get_db()
+        if "name" in data:
+            name = data["name"].strip()
+            if not name:
+                return error("Project name cannot be empty")
+            db.execute(
+                "UPDATE projects SET name = ? WHERE id = ?", (name, project_id)
+            )
+        if "rate" in data:
+            if not valid_money(data["rate"]):
+                return error("Rate must be a non-negative number")
+            db.execute(
+                "UPDATE projects SET rate = ? WHERE id = ?",
+                (data["rate"], project_id),
+            )
         db.commit()
         return ok()
 
@@ -205,11 +259,24 @@ def create_app(db_path):
         project_id = data.get("project_id")
         if not (title and deadline and project_id):
             return error("Task needs a project, title, and deadline")
+        task_type = data.get("task_type", "grant")
+        if task_type not in ("grant", "other"):
+            return error("task_type must be 'grant' or 'other'")
+        if task_type == "other":
+            foa, applied, awarded = None, None, None
+        else:
+            foa = (data.get("foa_description") or "").strip() or None
+            applied = data.get("amount_applied")
+            awarded = data.get("amount_awarded")
+            if not (valid_money(applied) and valid_money(awarded)):
+                return error("Amounts must be non-negative numbers")
         db = get_db()
         db.execute(
-            "INSERT INTO tasks (project_id, title, deadline, created_at)"
-            " VALUES (?, ?, ?, ?)",
-            (project_id, title, deadline, now_iso()),
+            "INSERT INTO tasks (project_id, title, deadline, task_type,"
+            " foa_description, amount_applied, amount_awarded, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (project_id, title, deadline, task_type, foa, applied, awarded,
+             now_iso()),
         )
         db.commit()
         return ok()
@@ -230,6 +297,29 @@ def create_app(db_path):
             db.execute(
                 "UPDATE tasks SET deadline = ? WHERE id = ?", (deadline, task_id)
             )
+        if "task_type" in data:
+            if data["task_type"] not in ("grant", "other"):
+                return error("task_type must be 'grant' or 'other'")
+            db.execute(
+                "UPDATE tasks SET task_type = ? WHERE id = ?",
+                (data["task_type"], task_id),
+            )
+            if data["task_type"] == "other":
+                data = {**data, "foa_description": None,
+                        "amount_applied": None, "amount_awarded": None}
+        if "foa_description" in data:
+            foa = (data["foa_description"] or "").strip() or None
+            db.execute(
+                "UPDATE tasks SET foa_description = ? WHERE id = ?", (foa, task_id)
+            )
+        for field in ("amount_applied", "amount_awarded"):
+            if field in data:
+                if not valid_money(data[field]):
+                    return error("Amounts must be non-negative numbers")
+                db.execute(
+                    f"UPDATE tasks SET {field} = ? WHERE id = ?",
+                    (data[field], task_id),
+                )
         db.commit()
         return ok()
 
@@ -375,6 +465,89 @@ def create_app(db_path):
         db.commit()
         return ok()
 
+    # ---------- list view / report ----------
+
+    @app.get("/api/projects/all")
+    def all_projects():
+        db = get_db()
+        return jsonify(
+            {
+                "projects": [
+                    dict(r)
+                    for r in db.execute(
+                        "SELECT id, name, color, archived FROM projects"
+                        " ORDER BY archived, name COLLATE NOCASE"
+                    ).fetchall()
+                ]
+            }
+        )
+
+    @app.get("/api/projects/<int:project_id>/tasks")
+    def project_tasks(project_id):
+        db = get_db()
+        if not db.execute(
+            "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+        ).fetchone():
+            return error("Project not found", 404)
+        tasks = [
+            dict(r)
+            for r in db.execute(
+                "SELECT * FROM tasks WHERE project_id = ?"
+                " ORDER BY completed_at DESC, deadline",
+                (project_id,),
+            ).fetchall()
+        ]
+        return jsonify({"tasks": tasks})
+
+    def fmt_money(v):
+        if v is None:
+            return "—"
+        return f"${v:,.0f}" if float(v).is_integer() else f"${v:,.2f}"
+
+    def fmt_day(iso_str):
+        d = datetime.fromisoformat(iso_str)
+        return f"{d.strftime('%b')} {d.day}, {d.year}"
+
+    @app.get("/report")
+    def report():
+        project_id = request.args.get("project_id", type=int)
+        try:
+            since = date.fromisoformat(request.args.get("since", ""))
+        except ValueError:
+            return "since must be YYYY-MM-DD", 400
+        db = get_db()
+        project = db.execute(
+            "SELECT * FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            return "Project not found", 404
+        grants = db.execute(
+            "SELECT * FROM tasks WHERE project_id = ? AND task_type = 'grant'"
+            " AND completed = 1 AND completed_at >= ? ORDER BY completed_at",
+            (project_id, since.isoformat()),
+        ).fetchall()
+        rows = [
+            {
+                "title": g["title"],
+                "foa": g["foa_description"] or "—",
+                "submitted": fmt_day(g["completed_at"]),
+                "applied": fmt_money(g["amount_applied"]),
+                "awarded": fmt_money(g["amount_awarded"]),
+            }
+            for g in grants
+        ]
+        return render_template(
+            "report.html",
+            project=project,
+            since=fmt_day(since.isoformat()),
+            rows=rows,
+            total_applied=fmt_money(
+                sum(g["amount_applied"] or 0 for g in grants)),
+            total_awarded=fmt_money(
+                sum(g["amount_awarded"] or 0 for g in grants)),
+            generated=fmt_day(date.today().isoformat()),
+        )
+
     # ---------- timeline ----------
 
     @app.get("/api/timeline")
@@ -388,7 +561,8 @@ def create_app(db_path):
         db = get_db()
         sessions = []
         for s in db.execute(
-            "SELECT ws.*, p.name AS project_name, p.color FROM work_sessions ws"
+            "SELECT ws.*, p.name AS project_name, p.color, p.rate"
+            " FROM work_sessions ws"
             " JOIN projects p ON p.id = ws.project_id"
             " WHERE ws.started_at < ?"
             " AND (ws.ended_at IS NULL OR ws.ended_at >= ?)"
