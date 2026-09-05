@@ -586,9 +586,13 @@ def create_app(db_path):
 
 
 if __name__ == "__main__":
+    import os
     import threading
     import webbrowser
 
     application = create_app(Path(__file__).parent / "grants.db")
-    threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5001")).start()
+    # The Mac launcher (Grant Tracker.app) opens the browser itself once the
+    # server answers, so it sets this to avoid a second tab.
+    if not os.environ.get("GRANT_TRACKER_NO_BROWSER"):
+        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5001")).start()
     application.run(port=5001, debug=False)

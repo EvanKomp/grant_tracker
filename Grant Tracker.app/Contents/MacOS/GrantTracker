@@ -1,0 +1,257 @@
+#!/bin/bash
+# Grant Tracker launcher — this is what runs when you double-click
+# "Grant Tracker.app" in Finder (or click it in the Dock).
+#
+#   First run:  creates a private Python environment in <repo>/.venv and
+#               installs requirements.txt into it.
+#   Every run:  starts the local server (python app.py) in the background and
+#               opens http://127.0.0.1:5001 in the default browser. If the
+#               server is already running, offers to open it or stop it.
+#
+# The script talks to the user only through macOS dialogs, so no Terminal
+# window is involved. Logs: ~/Library/Logs/Grant Tracker/
+#
+# The .app must stay at the top level of the repository, next to app.py.
+
+set -u
+
+APP_NAME="Grant Tracker"
+PORT=5001
+URL="http://127.0.0.1:$PORT"
+PYTHON_DOWNLOAD_URL="https://www.python.org/downloads/macos/"
+LOG_DIR="$HOME/Library/Logs/$APP_NAME"
+INSTALL_LOG="$LOG_DIR/install.log"
+SERVER_LOG="$LOG_DIR/server.log"
+DIALOG_TIMEOUT="${GRANT_TRACKER_DIALOG_TIMEOUT:-120}"   # seconds before an unanswered dialog closes
+
+# <repo>/Grant Tracker.app/Contents/MacOS/GrantTracker  ->  <repo>
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)"
+ICON_FILE="$SCRIPT_DIR/../Resources/AppIcon.icns"
+VENV="$REPO/.venv"
+
+# ---------------------------------------------------------------- dialogs ---
+
+# Escape text for use inside an AppleScript double-quoted string literal.
+as_quote() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# The app's own icon for dialogs, falling back to the standard "note" icon.
+dialog_icon() {
+  if [ -f "$ICON_FILE" ]; then
+    printf 'with icon POSIX file "%s"' "$(as_quote "$ICON_FILE")"
+  else
+    printf 'with icon note'
+  fi
+}
+
+# ask MESSAGE DEFAULT_BUTTON BUTTON...   -> prints the button pressed, or
+# nothing if the dialog was dismissed / timed out.
+ask() {
+  local msg default buttons="" b
+  msg="$(as_quote "$1")"; default="$(as_quote "$2")"; shift 2
+  for b in "$@"; do
+    buttons="$buttons${buttons:+, }\"$(as_quote "$b")\""
+  done
+  osascript \
+    -e "display dialog \"$msg\" with title \"$APP_NAME\" buttons {$buttons} default button \"$default\" giving up after $DIALOG_TIMEOUT $(dialog_icon)" \
+    -e 'if gave up of result then return ""' \
+    -e 'button returned of result' 2>/dev/null
+}
+
+# show_error MESSAGE [LOGFILE]   -> modal error; "Show Log" opens the log.
+show_error() {
+  local msg="$(as_quote "$1")" log="${2:-}" btn
+  if [ -n "$log" ] && [ -f "$log" ]; then
+    btn="$(osascript \
+      -e "display dialog \"$msg\" with title \"$APP_NAME\" buttons {\"Show Log\", \"OK\"} default button \"OK\" with icon stop" \
+      -e 'button returned of result' 2>/dev/null)"
+    if [ "$btn" = "Show Log" ]; then open "$log"; fi
+  else
+    osascript \
+      -e "display dialog \"$msg\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" with icon stop" \
+      >/dev/null 2>&1
+  fi
+}
+
+# A non-blocking "please wait" window, closed with hide_progress.
+PROGRESS_PID=""
+show_progress() {
+  local msg="$(as_quote "$1")"
+  osascript \
+    -e "display dialog \"$msg\" with title \"$APP_NAME\" buttons {\"OK\"} default button \"OK\" giving up after 1800 $(dialog_icon)" \
+    >/dev/null 2>&1 &
+  PROGRESS_PID=$!
+}
+hide_progress() {
+  if [ -n "$PROGRESS_PID" ]; then
+    kill "$PROGRESS_PID" 2>/dev/null
+    PROGRESS_PID=""
+  fi
+}
+
+# ----------------------------------------------------------------- python ---
+
+# Print the path of a usable Python 3.9+ interpreter, or fail.
+find_python() {
+  local candidates="/Library/Frameworks/Python.framework/Versions/Current/bin/python3
+/opt/homebrew/bin/python3
+/usr/local/bin/python3"
+  local p
+  for p in $candidates /Library/Frameworks/Python.framework/Versions/3.*/bin/python3; do
+    [ -x "$p" ] || continue
+    if python_ok "$p"; then printf '%s' "$p"; return 0; fi
+  done
+  # Apple's /usr/bin/python3 is only real once the Command Line Tools exist;
+  # otherwise merely running it pops up an unrelated Xcode install prompt.
+  if [ -d "$(xcode-select -p 2>/dev/null)" ] && python_ok /usr/bin/python3; then
+    printf '%s' /usr/bin/python3; return 0
+  fi
+  return 1
+}
+
+python_ok() {
+  "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1
+}
+
+venv_ok() {
+  [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c 'import flask' >/dev/null 2>&1
+}
+
+# Create .venv and install requirements (also repairs a broken .venv, e.g.
+# after the Python it was built on was upgraded or removed).
+ensure_venv() {
+  venv_ok && return 0
+
+  local py
+  if ! py="$(find_python)"; then
+    local btn
+    btn="$(ask "$APP_NAME needs Python 3 (version 3.9 or newer), and it isn't installed on this Mac.
+
+Click “Download Python” to open the Python website. Download the macOS installer, run it (keep clicking Continue), then double-click $APP_NAME again." "Download Python" "Cancel" "Download Python")"
+    [ "$btn" = "Download Python" ] && open "$PYTHON_DOWNLOAD_URL"
+    return 1
+  fi
+
+  show_progress "Setting up $APP_NAME for first use. This takes a minute or two and needs an internet connection.
+
+This window closes by itself when setup is finished."
+
+  {
+    echo "=== $(date) — setting up $VENV with $py ($("$py" --version 2>&1)) ==="
+    rm -rf "$VENV"
+    "$py" -m venv "$VENV" &&
+      "$VENV/bin/python" -m pip install --disable-pip-version-check -r "$REPO/requirements.txt"
+  } >>"$INSTALL_LOG" 2>&1
+  local status=$?
+
+  hide_progress
+  if [ $status -ne 0 ] || ! venv_ok; then
+    show_error "Setting up $APP_NAME failed.
+
+Check that this Mac is connected to the internet, then double-click $APP_NAME again.
+
+If macOS asked whether $APP_NAME may access your Documents folder and you clicked “Don't Allow”, turn it on in System Settings → Privacy & Security → Files and Folders.
+
+If it keeps failing, the log has details." "$INSTALL_LOG"
+    return 1
+  fi
+  return 0
+}
+
+# ----------------------------------------------------------------- server ---
+
+is_up() {
+  curl -s -o /dev/null -m 2 "$URL/" 2>/dev/null
+}
+
+# PIDs of processes listening on our port that are running app.py.
+server_pids() {
+  local pid
+  for pid in $(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null); do
+    if ps -o command= -p "$pid" 2>/dev/null | grep -q 'app\.py'; then
+      printf '%s\n' "$pid"
+    fi
+  done
+}
+
+rotate_log() {
+  local size
+  size="$(stat -f %z "$SERVER_LOG" 2>/dev/null || echo 0)"
+  if [ "$size" -gt 2000000 ]; then mv -f "$SERVER_LOG" "$SERVER_LOG.old"; fi
+}
+
+# Start the server detached from this script; wait until it answers.
+start_server() {
+  cd "$REPO" || return 1
+  rotate_log
+  echo "=== $(date) — starting $APP_NAME ===" >>"$SERVER_LOG"
+  GRANT_TRACKER_NO_BROWSER=1 nohup "$VENV/bin/python" app.py </dev/null >>"$SERVER_LOG" 2>&1 &
+  local pid=$! i
+  for i in $(seq 1 60); do          # up to ~30 s
+    is_up && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.5
+  done
+  return 1
+}
+
+stop_server() {
+  local pids pid
+  pids="$(server_pids)"
+  if [ -z "$pids" ]; then
+    show_error "Couldn't find the $APP_NAME server process. Something else may be using port $PORT."
+    return 1
+  fi
+  for pid in $pids; do kill "$pid" 2>/dev/null; done
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    is_up || break
+    sleep 0.5
+  done
+  DIALOG_TIMEOUT=20 ask "$APP_NAME has been stopped." "OK" "OK" >/dev/null
+}
+
+already_running() {
+  local btn
+  btn="$(ask "$APP_NAME is already running.
+
+Open it in your browser, or stop it?" "Open in Browser" "Stop $APP_NAME" "Open in Browser")"
+  case "$btn" in
+    "Open in Browser") open "$URL" ;;
+    "Stop $APP_NAME")  stop_server ;;
+  esac
+}
+
+# ------------------------------------------------------------------- main ---
+
+main() {
+  mkdir -p "$LOG_DIR" 2>/dev/null
+
+  if [ -z "$REPO" ] || [ ! -f "$REPO/app.py" ] || [ ! -f "$REPO/requirements.txt" ]; then
+    show_error "$APP_NAME.app has to stay inside the grant_tracking folder, next to app.py.
+
+Please move it back. To make a shortcut, drag $APP_NAME.app onto the Dock instead of moving it."
+    exit 1
+  fi
+
+  if is_up; then
+    already_running
+    exit 0
+  fi
+
+  ensure_venv || exit 1
+
+  if start_server; then
+    open "$URL"
+  else
+    show_error "$APP_NAME could not start. The log has details." "$SERVER_LOG"
+    exit 1
+  fi
+}
+
+# Run main only when executed directly (tests can `source` this file).
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi
