@@ -15,6 +15,7 @@
       <button id="nav-list" class="nav-btn">List</button>
     </nav>
     <button id="new-project-btn" class="primary-btn">+ New project</button>
+    <button id="quit-btn" class="ghost-btn" title="Stop Grant Tracker on this computer">Quit</button>
   </header>
 
   <main>
@@ -24,9 +25,16 @@
 
     <section id="timeline-view" hidden>
       <div class="timeline-nav">
-        <button id="week-prev" class="soft-btn">&larr; Previous week</button>
-        <span id="week-label"></span>
-        <button id="week-next" class="soft-btn">Next week &rarr;</button>
+        <span class="tl-nav-side"></span>
+        <span class="tl-week-nav">
+          <button id="week-prev" class="soft-btn">&larr; Previous week</button>
+          <span id="week-label"></span>
+          <button id="week-next" class="soft-btn">Next week &rarr;</button>
+        </span>
+        <span class="tl-nav-side right">
+          <button id="session-add" class="soft-btn">+ Add session</button>
+          <button id="hours-export" class="soft-btn">Export hours</button>
+        </span>
       </div>
       <div id="timeline-grid"></div>
     </section>

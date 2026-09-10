@@ -142,12 +142,141 @@ function openSessionPopup(s) {
       ? esc(s.description) : '<span class="muted">No description.</span>'}</div>
     ${todoItems}
     <div class="dialog-actions">
+      <button class="ghost-btn" data-act="edit">Edit</button>
+      <span class="spacer"></span>
       <button class="soft-btn" data-act="close">Close</button>
     </div>`);
   c.querySelector('[data-act="close"]').onclick = closeModal;
+  c.querySelector('[data-act="edit"]').onclick = () => openSessionForm(s);
+}
+
+// ---------- editing / adding work sessions ----------
+
+// Re-render whatever is showing after a session changed (board timer and
+// timeline bars both depend on sessions).
+function afterSessionChange() {
+  refresh();
+  if (!document.getElementById("timeline-view").hidden) loadTimelineWeek();
+}
+
+function projectOptions(projects, selectedId) {
+  return projects.map((p) =>
+    `<option value="${p.id}" ${p.id === selectedId ? "selected" : ""}>` +
+    `${esc(p.name)}${p.archived ? " (archived)" : ""}</option>`).join("");
+}
+
+// session: a work_sessions row (from the timeline or state.active_session),
+// or null to add a past session by hand.
+async function openSessionForm(session) {
+  const editing = !!session;
+  const stillOpen = editing && !session.ended_at;
+  const { projects } = await api("GET", "/api/projects/all");
+  if (!projects.length) { toast("Create a project first"); return; }
+
+  let start, end;
+  if (editing) {
+    start = session.started_at.slice(0, 16);
+    end = session.ended_at ? session.ended_at.slice(0, 16) : "";
+  } else {
+    // default to 9–10 am on today (if the shown week is this week) or Monday
+    const today = new Date();
+    const day = mondayOf(today).getTime() === timelineWeekStart.getTime()
+      ? today : timelineWeekStart;
+    start = `${isoDate(day)}T09:00`;
+    end = `${isoDate(day)}T10:00`;
+  }
+
+  const c = openModal(`
+    <h3>${editing ? "Edit work session" : "Add work session"}</h3>
+    <label for="sf-project">Project</label>
+    <select id="sf-project">${projectOptions(projects, editing ? session.project_id : projects[0].id)}</select>
+    <label for="sf-start">Start</label>
+    <input id="sf-start" type="datetime-local" value="${start}">
+    <label for="sf-end">End${stillOpen ? " (leave blank to stay clocked in)" : ""}</label>
+    <input id="sf-end" type="datetime-local" value="${end}">
+    <label for="sf-desc">What was worked on (optional)</label>
+    <textarea id="sf-desc">${editing ? esc(session.description || "") : ""}</textarea>
+    <div class="dialog-actions">
+      ${editing ? '<button class="ghost-btn" data-act="delete">Delete session</button>' : ""}
+      <span class="spacer"></span>
+      <button class="soft-btn" data-act="cancel">Cancel</button>
+      <button class="primary-btn" data-act="ok">${editing ? "Save" : "Add session"}</button>
+    </div>`);
+  c.querySelector('[data-act="cancel"]').onclick = closeModal;
+  c.querySelector('[data-act="ok"]').onclick = async () => {
+    const body = {
+      project_id: Number(c.querySelector("#sf-project").value),
+      started_at: c.querySelector("#sf-start").value,
+      ended_at: c.querySelector("#sf-end").value || null,
+      description: c.querySelector("#sf-desc").value,
+    };
+    if (!body.started_at) { toast("Start is required"); return; }
+    if (!body.ended_at && !stillOpen) { toast("End is required"); return; }
+    try {
+      if (editing) await api("PATCH", `/api/sessions/${session.id}`, body);
+      else await api("POST", "/api/sessions", body);
+    } catch (e) {
+      return; // api() already showed the reason; keep the form open to fix it
+    }
+    closeModal();
+    afterSessionChange();
+  };
+  if (editing) {
+    c.querySelector('[data-act="delete"]').onclick = () => confirmDialog(
+      "Delete work session",
+      stillOpen
+        ? "Delete the session you are clocked into? You will no longer be clocked in."
+        : "Delete this work session? Its hours disappear from the timeline and " +
+          "exports; todos checked during it are kept but no longer tied to it.",
+      "Delete",
+      async () => {
+        await api("DELETE", `/api/sessions/${session.id}`);
+        afterSessionChange();
+      });
+  }
+  c.querySelector("#sf-start").focus();
+}
+
+// ---------- hours export ----------
+
+async function openHoursExport() {
+  const { projects } = await api("GET", "/api/projects/all");
+  if (!projects.length) { toast("No projects yet"); return; }
+  const weekEnd = new Date(timelineWeekStart.getTime() + 6 * DAY_MS);
+  const c = openModal(`
+    <h3>Export hours</h3>
+    <label for="hx-project">Project</label>
+    <select id="hx-project">${projectOptions(projects, projects[0].id)}</select>
+    <label for="hx-since">From</label>
+    <input id="hx-since" type="date" value="${isoDate(timelineWeekStart)}">
+    <label for="hx-until">To</label>
+    <input id="hx-until" type="date" value="${isoDate(weekEnd)}">
+    <label class="check-row"><input type="checkbox" id="hx-desc"> Include descriptions</label>
+    <label class="check-row"><input type="checkbox" id="hx-todos"> Include todos completed</label>
+    <div class="dialog-actions">
+      <button class="soft-btn" data-act="cancel">Cancel</button>
+      <button class="primary-btn" data-act="ok">Export PDF</button>
+    </div>`);
+  c.querySelector('[data-act="cancel"]').onclick = closeModal;
+  c.querySelector('[data-act="ok"]').onclick = () => {
+    const since = c.querySelector("#hx-since").value;
+    const until = c.querySelector("#hx-until").value;
+    if (!since || !until) { toast("Pick both dates"); return; }
+    if (until < since) { toast("The end date is before the start date"); return; }
+    const params = new URLSearchParams({
+      project_id: c.querySelector("#hx-project").value,
+      since, until,
+      descriptions: c.querySelector("#hx-desc").checked ? "1" : "0",
+      todos: c.querySelector("#hx-todos").checked ? "1" : "0",
+    });
+    closeModal();
+    window.open(`/hours_report?${params}`, "_blank");
+  };
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("session-add").onclick = () => openSessionForm(null);
+  document.getElementById("hours-export").onclick = openHoursExport;
   document.getElementById("week-prev").onclick = () => {
     timelineWeekStart = new Date(timelineWeekStart.getTime() - 7 * DAY_MS);
     timelineWeekStart = mondayOf(timelineWeekStart); // guard DST drift

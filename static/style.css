@@ -46,6 +46,8 @@ header h1 {
 
 nav { display: flex; gap: 6px; flex: 1; }
 
+#quit-btn { margin-left: -12px; }
+
 button {
   font: inherit;
   color: var(--ink);
@@ -349,16 +351,43 @@ dialog input:focus, dialog select:focus, dialog textarea:focus {
 }
 .dialog-actions .spacer { flex: 1; }
 
+dialog label.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: var(--ink);
+  margin-top: 14px;
+}
+dialog label.check-row input { width: 16px; height: 16px; accent-color: #a68fd6; }
+
 /* ---------- timeline ---------- */
 
 #timeline-view { padding: 24px 28px; }
 
 .timeline-nav {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.tl-week-nav {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 18px;
-  margin-bottom: 18px;
+}
+
+.tl-nav-side.right {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 900px) {
+  .timeline-nav { grid-template-columns: 1fr; gap: 10px; }
+  .tl-nav-side.right { justify-content: center; }
 }
 
 #week-label { font-weight: 600; min-width: 220px; text-align: center; }

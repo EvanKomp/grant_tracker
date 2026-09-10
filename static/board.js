@@ -67,7 +67,7 @@ const modalContent = document.getElementById("modal-content");
 
 function openModal(html) {
   modalContent.innerHTML = html;
-  modal.showModal();
+  if (!modal.open) modal.showModal(); // may replace an already-open dialog
   return modalContent;
 }
 
@@ -260,6 +260,9 @@ function renderClockFooter(p, box) {
   const active = state.active_session;
   if (active && active.project_id === p.id) {
     box.appendChild(el(`<span class="timer" id="active-timer">0:00:00</span>`));
+    const edit = el(`<button class="ghost-btn" title="Fix the start time">✎</button>`);
+    edit.onclick = () => openSessionForm(active); // defined in timeline.js
+    box.appendChild(edit);
     const out = el(`<button class="clock-out-btn">Clock out</button>`);
     out.onclick = openClockOutModal;
     box.appendChild(out);
@@ -489,7 +492,23 @@ function applyHash() {
   switchView(name === "timeline" || name === "list" ? name : "board");
 }
 
+function quitApp() {
+  confirmDialog(
+    "Quit Grant Tracker",
+    "This stops the app on this computer. Everything is saved; start it again " +
+    "any time by double-clicking Grant Tracker (or running python3 app.py).",
+    "Quit",
+    async () => {
+      await api("POST", "/api/quit");
+      clearInterval(tickInterval);
+      document.querySelector("main").innerHTML =
+        `<div class="empty-board">Grant Tracker has stopped. You can close this tab.</div>`;
+    },
+    false);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("quit-btn").onclick = quitApp;
   document.getElementById("new-project-btn").onclick = () => openProjectForm();
   for (const view of ["board", "timeline", "list"]) {
     document.getElementById(`nav-${view}`).onclick = () => {

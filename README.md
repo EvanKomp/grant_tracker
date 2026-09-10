@@ -18,9 +18,10 @@ clock in/out, and a retrospective timeline of when work happened.
 3. Optional: drag **Grant Tracker** onto the Dock so it's one click away.
    Keep the original inside the folder — the Dock icon is a shortcut to it.
 
-To quit: double-click **Grant Tracker** again and choose **Stop Grant
-Tracker**. (Closing the browser tab doesn't stop the app; it just keeps
-running quietly until you stop it or restart the Mac.)
+To quit: click **Quit** at the top right of the app. (Closing the browser
+tab doesn't stop the app; it keeps running quietly until you quit it or
+restart the Mac.) Double-clicking **Grant Tracker** while it is already
+running restarts it and opens it again — do this after updating the folder.
 
 Things macOS may ask on the first launch:
 
@@ -51,7 +52,12 @@ pip3 install -r requirements.txt
 python3 app.py
 ```
 
-This starts a local server and opens http://127.0.0.1:5001 in your browser.
+This starts a local server, prints the address it is running at (normally
+http://127.0.0.1:5001) and opens it in your browser. Running `python3 app.py`
+again stops the copy that is already running and starts a fresh one. If
+another program is holding port 5001, the next free port is used and printed
+instead. Stop the server with Ctrl+C in the terminal or **Quit** in the app.
+To pin a different port: `GRANT_TRACKER_PORT=5010 python3 app.py`.
 
 ## Your data
 
@@ -77,6 +83,18 @@ it starts you over with an empty board.
   placed at the time of day it happened. Click a bar to see the note and
   the todos checked during it. Below the grid, **Week totals** lists hours
   per project for that week.
+- Forgot to clock out, or clocked into the wrong project? Click the bar,
+  then **Edit** to change the project, start, end, or note, or to delete the
+  session. **+ Add session** records a block of work after the fact. While
+  clocked in, the ✎ next to the timer fixes the start time. Sessions can't
+  overlap each other (the app assumes one thing at a time), and moving a
+  session to another project drops its links to todos from other projects.
+- **Export hours** (Timeline) makes a print-ready report for one project over
+  a date range: every work block with its day, start–end time and duration,
+  week subtotals when the range spans more than one week, and the total (with
+  earnings if the project has a rate). Tick **Include descriptions** and/or
+  **Include todos completed** to add those to each block. Sessions still in
+  progress are left out. Use the browser print dialog's "Save as PDF".
 - Projects can optionally have an **hourly rate** (set it when creating a
   project, or later via the ✎ button in the column header). When set, the
   week totals also show earnings in light grey next to the hours.

@@ -5,8 +5,9 @@
 #   First run:  creates a private Python environment in <repo>/.venv and
 #               installs requirements.txt into it.
 #   Every run:  starts the local server (python app.py) in the background and
-#               opens http://127.0.0.1:5001 in the default browser. If the
-#               server is already running, offers to open it or stop it.
+#               opens it in the default browser. app.py itself stops any copy
+#               that is already running, so double-clicking again restarts the
+#               app (handy after pulling an update). Quit from inside the app.
 #
 # The script talks to the user only through macOS dialogs, so no Terminal
 # window is involved. Logs: ~/Library/Logs/Grant Tracker/
@@ -16,12 +17,11 @@
 set -u
 
 APP_NAME="Grant Tracker"
-PORT=5001
-URL="http://127.0.0.1:$PORT"
 PYTHON_DOWNLOAD_URL="https://www.python.org/downloads/macos/"
 LOG_DIR="$HOME/Library/Logs/$APP_NAME"
 INSTALL_LOG="$LOG_DIR/install.log"
 SERVER_LOG="$LOG_DIR/server.log"
+PORT_FILE="$LOG_DIR/port"      # app.py writes the port it picked here
 DIALOG_TIMEOUT="${GRANT_TRACKER_DIALOG_TIMEOUT:-120}"   # seconds before an unanswered dialog closes
 
 # <repo>/Grant Tracker.app/Contents/MacOS/GrantTracker  ->  <repo>
@@ -162,18 +162,9 @@ If it keeps failing, the log has details." "$INSTALL_LOG"
 
 # ----------------------------------------------------------------- server ---
 
-is_up() {
-  curl -s -o /dev/null -m 2 "$URL/" 2>/dev/null
-}
-
-# PIDs of processes listening on our port that are running app.py.
-server_pids() {
-  local pid
-  for pid in $(lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null); do
-    if ps -o command= -p "$pid" 2>/dev/null | grep -q 'app\.py'; then
-      printf '%s\n' "$pid"
-    fi
-  done
+# Does a Grant Tracker with process id $2 answer on port $1?
+answers_on() {
+  curl -s -m 2 "http://127.0.0.1:$1/api/health" 2>/dev/null | grep -q "\"pid\":$2[,}]"
 }
 
 rotate_log() {
@@ -182,46 +173,26 @@ rotate_log() {
   if [ "$size" -gt 2000000 ]; then mv -f "$SERVER_LOG" "$SERVER_LOG.old"; fi
 }
 
-# Start the server detached from this script; wait until it answers.
+# Start the server detached from this script (app.py stops any older copy
+# first). Prints the URL once the new server answers; fails otherwise.
 start_server() {
   cd "$REPO" || return 1
   rotate_log
+  rm -f "$PORT_FILE"
   echo "=== $(date) — starting $APP_NAME ===" >>"$SERVER_LOG"
-  GRANT_TRACKER_NO_BROWSER=1 nohup "$VENV/bin/python" app.py </dev/null >>"$SERVER_LOG" 2>&1 &
-  local pid=$! i
-  for i in $(seq 1 60); do          # up to ~30 s
-    is_up && return 0
+  GRANT_TRACKER_NO_BROWSER=1 GRANT_TRACKER_PORT_FILE="$PORT_FILE" \
+    nohup "$VENV/bin/python" app.py </dev/null >>"$SERVER_LOG" 2>&1 &
+  local pid=$! i port
+  for i in $(seq 1 80); do          # up to ~40 s (stopping an old copy takes a moment)
+    port="$(cat "$PORT_FILE" 2>/dev/null)"
+    if [ -n "$port" ] && answers_on "$port" "$pid"; then
+      printf 'http://127.0.0.1:%s' "$port"
+      return 0
+    fi
     kill -0 "$pid" 2>/dev/null || return 1
     sleep 0.5
   done
   return 1
-}
-
-stop_server() {
-  local pids pid
-  pids="$(server_pids)"
-  if [ -z "$pids" ]; then
-    show_error "Couldn't find the $APP_NAME server process. Something else may be using port $PORT."
-    return 1
-  fi
-  for pid in $pids; do kill "$pid" 2>/dev/null; done
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    is_up || break
-    sleep 0.5
-  done
-  DIALOG_TIMEOUT=20 ask "$APP_NAME has been stopped." "OK" "OK" >/dev/null
-}
-
-already_running() {
-  local btn
-  btn="$(ask "$APP_NAME is already running.
-
-Open it in your browser, or stop it?" "Open in Browser" "Stop $APP_NAME" "Open in Browser")"
-  case "$btn" in
-    "Open in Browser") open "$URL" ;;
-    "Stop $APP_NAME")  stop_server ;;
-  esac
 }
 
 # ------------------------------------------------------------------- main ---
@@ -236,15 +207,11 @@ Please move it back. To make a shortcut, drag $APP_NAME.app onto the Dock instea
     exit 1
   fi
 
-  if is_up; then
-    already_running
-    exit 0
-  fi
-
   ensure_venv || exit 1
 
-  if start_server; then
-    open "$URL"
+  local url
+  if url="$(start_server)"; then
+    open "$url"
   else
     show_error "$APP_NAME could not start. The log has details." "$SERVER_LOG"
     exit 1

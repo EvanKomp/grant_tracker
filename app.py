@@ -2,12 +2,28 @@
 
 Run with:  python3 app.py   (serves http://127.0.0.1:5001 and opens a browser)
 Data lives in grants.db next to this file.
+
+Running it again stops any Grant Tracker that is already running and starts a
+fresh one. If port 5001 is held by some other program, the next free port is
+used; the port in use is printed when the server starts.
 """
+import json
+import logging
+import os
+import signal
+import socket
 import sqlite3
+import sys
+import threading
+import time
+import urllib.request
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, g, jsonify, render_template, request
+
+DEFAULT_PORT = 5001
+PORT_SEARCH_SPAN = 20  # if 5001 is taken by something else, try up to 5020
 
 PALETTE = [
     "#C9B8E8",  # lavender
@@ -75,6 +91,8 @@ def now_iso():
 def create_app(db_path):
     app = Flask(__name__)
     app.config["DB_PATH"] = str(db_path)
+    # What /api/quit does after replying (tests swap this out).
+    app.config["ON_QUIT"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
 
     with sqlite3.connect(app.config["DB_PATH"]) as init_db:
         init_db.executescript(SCHEMA)
@@ -128,11 +146,77 @@ def create_app(db_path):
         ).fetchone()
         return row["project_id"] if row else None
 
+    def parse_datetime(value, field):
+        """Normalize a local date-time string to 'YYYY-MM-DDTHH:MM:SS'."""
+        if not isinstance(value, str):
+            raise ValueError(f"{field} must be a date and time")
+        try:
+            dt = datetime.fromisoformat(value)
+        except ValueError:
+            raise ValueError(f"{field} must look like 2026-09-04T14:30")
+        if dt.tzinfo is not None:
+            raise ValueError(f"{field} must be a local time without a timezone")
+        return dt.isoformat(timespec="seconds")
+
+    def session_overlap(db, started_at, ended_at, exclude_id=None):
+        """Return another session overlapping [started_at, ended_at), if any.
+
+        A still-open session (ended_at NULL) is treated as running until now.
+        """
+        now = now_iso()
+        return db.execute(
+            "SELECT ws.*, p.name AS project_name FROM work_sessions ws"
+            " JOIN projects p ON p.id = ws.project_id"
+            " WHERE ws.id IS NOT ? AND ws.started_at < ?"
+            " AND COALESCE(ws.ended_at, ?) > ?"
+            " ORDER BY ws.started_at LIMIT 1",
+            (exclude_id, ended_at or now, now, started_at),
+        ).fetchone()
+
+    def check_session(db, fields, exclude_id=None):
+        """Validate a session's project/start/end; return an error or None."""
+        project_id = fields["project_id"]
+        if (
+            not isinstance(project_id, int)
+            or isinstance(project_id, bool)
+            or not db.execute(
+                "SELECT 1 FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+        ):
+            return "Project not found"
+        if fields["ended_at"] is None:
+            if fields["started_at"] > now_iso():
+                return "Start can't be in the future while clocked in"
+        elif fields["ended_at"] < fields["started_at"]:
+            return "End can't be before start"
+        other = session_overlap(
+            db, fields["started_at"], fields["ended_at"], exclude_id
+        )
+        if other:
+            return (
+                f"Overlaps a {other['project_name']} session "
+                f"({describe_span(other['started_at'], other['ended_at'])})"
+            )
+        return None
+
     # ---------- pages ----------
 
     @app.get("/")
     def index():
         return render_template("index.html")
+
+    # ---------- process control ----------
+
+    @app.get("/api/health")
+    def health():
+        """Lets a newly started copy recognise (and stop) this one."""
+        return jsonify({"app": "grant-tracker", "pid": os.getpid()})
+
+    @app.post("/api/quit")
+    def quit_app():
+        # The dev server only listens on 127.0.0.1, so this is local-only.
+        threading.Timer(0.3, app.config["ON_QUIT"]).start()
+        return ok()
 
     # ---------- state ----------
 
@@ -465,6 +549,98 @@ def create_app(db_path):
         db.commit()
         return ok()
 
+    # ---------- work sessions (retroactive edits) ----------
+
+    def session_fields(data, base):
+        """Merge a JSON payload over an existing row; raises ValueError."""
+        fields = dict(base)
+        if "project_id" in data:
+            fields["project_id"] = data["project_id"]
+        if "started_at" in data:
+            fields["started_at"] = parse_datetime(data["started_at"], "Start")
+        if "ended_at" in data:
+            fields["ended_at"] = (
+                None if data["ended_at"] is None
+                else parse_datetime(data["ended_at"], "End")
+            )
+        if "description" in data:
+            fields["description"] = (data["description"] or "").strip() or None
+        return fields
+
+    @app.post("/api/sessions")
+    def add_session():
+        data = request.json or {}
+        if data.get("started_at") is None or data.get("ended_at") is None:
+            return error("Start and end are required")
+        try:
+            fields = session_fields(
+                data,
+                {"project_id": None, "started_at": None, "ended_at": None,
+                 "description": None},
+            )
+        except ValueError as exc:
+            return error(str(exc))
+        db = get_db()
+        problem = check_session(db, fields)
+        if problem:
+            return error(problem)
+        db.execute(
+            "INSERT INTO work_sessions (project_id, started_at, ended_at, description)"
+            " VALUES (?, ?, ?, ?)",
+            (fields["project_id"], fields["started_at"], fields["ended_at"],
+             fields["description"]),
+        )
+        db.commit()
+        return ok()
+
+    @app.patch("/api/sessions/<int:session_id>")
+    def update_session(session_id):
+        db = get_db()
+        session = db.execute(
+            "SELECT * FROM work_sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if not session:
+            return error("Session not found", 404)
+        data = request.json or {}
+        if session["ended_at"] is not None and data.get("ended_at", "") is None:
+            return error("A finished session needs an end time")
+        try:
+            fields = session_fields(data, session)
+        except ValueError as exc:
+            return error(str(exc))
+        problem = check_session(db, fields, exclude_id=session_id)
+        if problem:
+            return error(problem)
+        db.execute(
+            "UPDATE work_sessions SET project_id = ?, started_at = ?, ended_at = ?,"
+            " description = ? WHERE id = ?",
+            (fields["project_id"], fields["started_at"], fields["ended_at"],
+             fields["description"], session_id),
+        )
+        if fields["project_id"] != session["project_id"]:
+            # Todos from other projects no longer belong to this session.
+            db.execute(
+                "UPDATE todos SET session_id = NULL WHERE session_id = ?"
+                " AND task_id IN (SELECT id FROM tasks WHERE project_id != ?)",
+                (session_id, fields["project_id"]),
+            )
+        db.commit()
+        return ok()
+
+    @app.delete("/api/sessions/<int:session_id>")
+    def delete_session(session_id):
+        db = get_db()
+        if not db.execute(
+            "SELECT 1 FROM work_sessions WHERE id = ?", (session_id,)
+        ).fetchone():
+            return error("Session not found", 404)
+        db.execute(
+            "UPDATE todos SET session_id = NULL WHERE session_id = ?", (session_id,)
+        )
+        db.execute("DELETE FROM work_sessions WHERE id = ?", (session_id,))
+        db.commit()
+        return ok()
+
     # ---------- list view / report ----------
 
     @app.get("/api/projects/all")
@@ -548,6 +724,117 @@ def create_app(db_path):
             generated=fmt_day(date.today().isoformat()),
         )
 
+    # ---------- hours report ----------
+
+    def fmt_clock(iso_str):
+        d = datetime.fromisoformat(iso_str)
+        h = d.hour % 12 or 12
+        return f"{h}:{d.minute:02d} {'pm' if d.hour >= 12 else 'am'}"
+
+    def fmt_hm(seconds):
+        mins = int(round(seconds / 60))
+        h, m = divmod(mins, 60)
+        return f"{h}h {m}m" if h else f"{m}m"
+
+    def describe_span(start, end):
+        text = f"{fmt_day(start)}, {fmt_clock(start)} – "
+        return text + (fmt_clock(end) if end else "still clocked in")
+
+    @app.get("/hours_report")
+    def hours_report():
+        project_id = request.args.get("project_id", type=int)
+        try:
+            since = date.fromisoformat(request.args.get("since", ""))
+            until_str = request.args.get("until", "")
+            until = date.fromisoformat(until_str) if until_str else date.today()
+        except ValueError:
+            return "since and until must be YYYY-MM-DD", 400
+        if until < since:
+            return "until must not be before since", 400
+        with_desc = request.args.get("descriptions") == "1"
+        with_todos = request.args.get("todos") == "1"
+        db = get_db()
+        project = db.execute(
+            "SELECT * FROM projects WHERE id = ?", (project_id,)
+        ).fetchone()
+        if not project:
+            return "Project not found", 404
+
+        range_start = since.isoformat()
+        range_end = (until + timedelta(days=1)).isoformat()
+        sessions = db.execute(
+            "SELECT * FROM work_sessions WHERE project_id = ?"
+            " AND ended_at IS NOT NULL AND started_at >= ? AND started_at < ?"
+            " ORDER BY started_at",
+            (project_id, range_start, range_end),
+        ).fetchall()
+        in_progress = db.execute(
+            "SELECT 1 FROM work_sessions WHERE project_id = ? AND ended_at IS NULL"
+            " AND started_at >= ? AND started_at < ?",
+            (project_id, range_start, range_end),
+        ).fetchone() is not None
+
+        weeks = []
+        total_seconds = 0
+        for s in sessions:
+            start = datetime.fromisoformat(s["started_at"])
+            end = datetime.fromisoformat(s["ended_at"])
+            seconds = max(0, (end - start).total_seconds())
+            total_seconds += seconds
+            monday = start.date() - timedelta(days=start.weekday())
+            if not weeks or weeks[-1]["monday"] != monday:
+                weeks.append({
+                    "monday": monday,
+                    "label": f"Week of {fmt_day(monday.isoformat())}",
+                    "rows": [],
+                    "seconds": 0,
+                })
+            week = weeks[-1]
+            week["seconds"] += seconds
+            todos = []
+            if with_todos:
+                todos = [
+                    dict(r)
+                    for r in db.execute(
+                        "SELECT td.text, t.title AS task_title FROM todos td"
+                        " JOIN tasks t ON t.id = td.task_id"
+                        " WHERE td.session_id = ? AND td.checked = 1"
+                        " ORDER BY td.checked_at, td.id",
+                        (s["id"],),
+                    ).fetchall()
+                ]
+            times = f"{fmt_clock(s['started_at'])} – {fmt_clock(s['ended_at'])}"
+            if end.date() != start.date():
+                times += f" ({start.strftime('%b')} {end.day})"
+            week["rows"].append({
+                "day": f"{start.strftime('%a')} {start.strftime('%b')} {start.day}",
+                "times": times,
+                "hours": fmt_hm(seconds),
+                "description": s["description"] if with_desc else None,
+                "todos": todos,
+            })
+        for week in weeks:
+            week["hours"] = fmt_hm(week["seconds"])
+
+        rate = project["rate"]
+        return render_template(
+            "hours_report.html",
+            project=project,
+            since=fmt_day(since.isoformat()),
+            until=fmt_day(until.isoformat()),
+            weeks=weeks,
+            show_weeks=len(weeks) > 1,
+            with_desc=with_desc,
+            with_todos=with_todos,
+            session_count=len(sessions),
+            total_hours=fmt_hm(total_seconds),
+            total_decimal=f"{total_seconds / 3600:.2f}",
+            rate=fmt_money(rate) if rate is not None else None,
+            earned=fmt_money(total_seconds / 3600 * rate) if rate is not None else None,
+            in_progress=in_progress,
+            generated=fmt_day(date.today().isoformat()),
+        )
+
     # ---------- timeline ----------
 
     @app.get("/api/timeline")
@@ -585,14 +872,79 @@ def create_app(db_path):
     return app
 
 
+def find_instance(port):
+    """Return the pid of a Grant Tracker already serving on `port`, else None."""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/health", timeout=1
+        ) as resp:
+            data = json.load(resp)
+    except (OSError, ValueError):
+        return None
+    return data.get("pid") if data.get("app") == "grant-tracker" else None
+
+
+def port_is_free(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        # Same option the server uses, so lingering closed connections
+        # don't make a port look busy.
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def stop_other_instances(ports):
+    """Stop every Grant Tracker found on `ports` and wait for them to exit."""
+    for port in ports:
+        pid = find_instance(port)
+        if pid is None or pid == os.getpid():
+            continue
+        print(f"Stopping the Grant Tracker already running on port {port}...",
+              flush=True)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        for _ in range(50):  # up to 5 seconds
+            if port_is_free(port):
+                break
+            time.sleep(0.1)
+
+
+def choose_port(preferred):
+    ports = range(preferred, preferred + PORT_SEARCH_SPAN)
+    stop_other_instances(ports)
+    for port in ports:
+        if port_is_free(port):
+            if port != preferred:
+                print(f"Port {preferred} is in use by another program; "
+                      f"using {port} instead.", flush=True)
+            return port
+    sys.exit(f"No free port between {ports[0]} and {ports[-1]}.")
+
+
 if __name__ == "__main__":
-    import os
-    import threading
     import webbrowser
 
-    application = create_app(Path(__file__).parent / "grants.db")
-    # The Mac launcher (Grant Tracker.app) opens the browser itself once the
-    # server answers, so it sets this to avoid a second tab.
+    port = choose_port(int(os.environ.get("GRANT_TRACKER_PORT", DEFAULT_PORT)))
+    url = f"http://127.0.0.1:{port}"
+
+    # The Mac launcher (Grant Tracker.app) asks for the port this way, and
+    # opens the browser itself once the server answers.
+    port_file = os.environ.get("GRANT_TRACKER_PORT_FILE")
+    if port_file:
+        Path(port_file).write_text(str(port))
     if not os.environ.get("GRANT_TRACKER_NO_BROWSER"):
-        threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5001")).start()
-    application.run(port=5001, debug=False)
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    # Keep the terminal quiet apart from the line that matters.
+    logging.getLogger("werkzeug").setLevel(logging.ERROR)
+    print(f"Grant Tracker is running at {url}", flush=True)
+    print("Leave this window open while you work. To stop: press Ctrl+C here,"
+          " or click Quit in the app.", flush=True)
+
+    application = create_app(Path(__file__).parent / "grants.db")
+    application.run(port=port, debug=False)
