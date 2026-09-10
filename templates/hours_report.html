@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ project['name'] }} — hours {{ since }} to {{ until }}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #2c2a33;
+      margin: 48px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 20px; margin: 0 0 2px; }
+    .subtitle { color: #6d6a77; margin-bottom: 28px; }
+    table { border-collapse: collapse; width: 100%; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #6d6a77;
+      border-bottom: 2px solid #d9d6e0;
+      padding: 6px 10px 6px 0;
+    }
+    td {
+      border-bottom: 1px solid #e9e7ee;
+      padding: 8px 10px 8px 0;
+      vertical-align: top;
+    }
+    td.day, td.times { white-space: nowrap; }
+    td.num, th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    td.notes { white-space: pre-line; color: #4a4754; }
+    td.notes ul { margin: 4px 0 0; padding-left: 18px; white-space: normal; }
+    td.notes li { margin-bottom: 2px; }
+    td.notes .task-ref { color: #8a8794; }
+    tr.week-head td {
+      border-bottom: none;
+      padding: 18px 0 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #6d6a77;
+    }
+    tr.week-total td {
+      border-bottom: none;
+      color: #6d6a77;
+      padding-top: 6px;
+      font-style: italic;
+    }
+    tr.total td { border-bottom: none; border-top: 2px solid #d9d6e0; font-weight: 600; padding-top: 12px; }
+    .empty { color: #6d6a77; font-style: italic; margin-top: 24px; }
+    .footnote { color: #6d6a77; font-size: 12px; margin-top: 20px; }
+    .print-note { margin-bottom: 28px; }
+    .print-note button {
+      font: inherit;
+      padding: 8px 16px;
+      border: 1px solid #d9d6e0;
+      border-radius: 8px;
+      background: #f4f2f7;
+      cursor: pointer;
+    }
+    @media print {
+      .print-note { display: none; }
+      body { margin: 0; }
+      tr { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="print-note">
+    <button onclick="window.print()">Print / Save as PDF</button>
+  </div>
+
+  <h1>{{ project['name'] }}</h1>
+  <div class="subtitle">
+    Hours worked {{ since }} – {{ until }}
+    {% if rate %}&middot; {{ rate }}/hour{% endif %}
+    &middot; generated {{ generated }}
+  </div>
+
+  {% if weeks %}
+  <table>
+    <thead>
+      <tr>
+        <th>Day</th>
+        <th>Time</th>
+        <th class="num">Hours</th>
+        {% if with_desc and with_todos %}<th>Description &amp; todos completed</th>
+        {% elif with_desc %}<th>Description</th>
+        {% elif with_todos %}<th>Todos completed</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% set cols = 3 + (1 if with_desc or with_todos else 0) %}
+      {% for w in weeks %}
+        {% if show_weeks %}
+        <tr class="week-head"><td colspan="{{ cols }}">{{ w['label'] }}</td></tr>
+        {% endif %}
+        {% for r in w['rows'] %}
+        <tr>
+          <td class="day">{{ r['day'] }}</td>
+          <td class="times">{{ r['times'] }}</td>
+          <td class="num">{{ r['hours'] }}</td>
+          {% if with_desc or with_todos %}
+          <td class="notes">{% if with_desc %}{{ r['description'] or '' }}{% endif %}
+            {%- if with_todos and r['todos'] %}<ul>{% for t in r['todos'] %}<li>{{ t['text'] }} <span class="task-ref">— {{ t['task_title'] }}</span></li>{% endfor %}</ul>{% endif %}</td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        {% if show_weeks %}
+        <tr class="week-total">
+          <td colspan="2">Week total</td>
+          <td class="num">{{ w['hours'] }}</td>
+          {% if with_desc or with_todos %}<td></td>{% endif %}
+        </tr>
+        {% endif %}
+      {% endfor %}
+      <tr class="total">
+        <td colspan="2">
+          Total ({{ session_count }} session{{ 's' if session_count != 1 }}, {{ total_decimal }} h)
+          {% if earned %}&middot; {{ earned }}{% endif %}
+        </td>
+        <td class="num">{{ total_hours }}</td>
+        {% if with_desc or with_todos %}<td></td>{% endif %}
+      </tr>
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No completed work sessions between {{ since }} and {{ until }}.</div>
+  {% endif %}
+
+  {% if in_progress %}
+  <div class="footnote">A session that is still clocked in is not included.</div>
+  {% endif %}
+
+  <script>
+    window.addEventListener("load", () => setTimeout(() => window.print(), 300));
+  </script>
+</body>
+</html>
