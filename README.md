@@ -93,8 +93,10 @@ it starts you over with an empty board.
   a date range: every work block with its day, start–end time and duration,
   week subtotals when the range spans more than one week, and the total (with
   earnings if the project has a rate). Tick **Include descriptions** and/or
-  **Include todos completed** to add those to each block. Sessions still in
-  progress are left out. Use the browser print dialog's "Save as PDF".
+  **Include todos completed** to add those to each block. Untick **Include
+  dollar amounts** (on by default) to leave the rate and earnings off, so the
+  report is just the hour breakdown. Sessions still in progress are left out.
+  Use the browser print dialog's "Save as PDF".
 - Projects can optionally have an **hourly rate** (set it when creating a
   project, or later via the ✎ button in the column header). When set, the
   week totals also show earnings in light grey next to the hours.

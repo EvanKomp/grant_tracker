@@ -508,6 +508,10 @@ def test_hours_report_blocks_totals_and_options(app, client):
     assert "Wrote abstract" in html and "Big grant" in html
     assert "Budget narrative" not in html
 
+    html = client.get(base + "&money=0").get_data(as_text=True)
+    assert "$480" not in html and "$80/hour" not in html   # money opted out
+    assert "3 sessions, 6.00 h" in html and "6h 0m" in html
+
     html = client.get(base + "&descriptions=1&todos=1").get_data(as_text=True)
     assert "Description &amp; todos completed" in html
 

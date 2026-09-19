@@ -253,6 +253,7 @@ async function openHoursExport() {
     <input id="hx-until" type="date" value="${isoDate(weekEnd)}">
     <label class="check-row"><input type="checkbox" id="hx-desc"> Include descriptions</label>
     <label class="check-row"><input type="checkbox" id="hx-todos"> Include todos completed</label>
+    <label class="check-row"><input type="checkbox" id="hx-money" checked> Include dollar amounts</label>
     <div class="dialog-actions">
       <button class="soft-btn" data-act="cancel">Cancel</button>
       <button class="primary-btn" data-act="ok">Export PDF</button>
@@ -268,6 +269,7 @@ async function openHoursExport() {
       since, until,
       descriptions: c.querySelector("#hx-desc").checked ? "1" : "0",
       todos: c.querySelector("#hx-todos").checked ? "1" : "0",
+      money: c.querySelector("#hx-money").checked ? "1" : "0",
     });
     closeModal();
     window.open(`/hours_report?${params}`, "_blank");

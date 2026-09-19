@@ -753,6 +753,7 @@ def create_app(db_path):
             return "until must not be before since", 400
         with_desc = request.args.get("descriptions") == "1"
         with_todos = request.args.get("todos") == "1"
+        with_money = request.args.get("money") != "0"
         db = get_db()
         project = db.execute(
             "SELECT * FROM projects WHERE id = ?", (project_id,)
@@ -816,7 +817,7 @@ def create_app(db_path):
         for week in weeks:
             week["hours"] = fmt_hm(week["seconds"])
 
-        rate = project["rate"]
+        rate = project["rate"] if with_money else None
         return render_template(
             "hours_report.html",
             project=project,
